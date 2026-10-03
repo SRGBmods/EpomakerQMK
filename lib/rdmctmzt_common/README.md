@@ -73,6 +73,7 @@ Define these in your keyboard's `config.h` to customize behavior:
 | `USB_AUTO_SWITCH_ENABLE`          | `1` (on)  | Automatically switch to USB mode when cable is plugged in |
 | `LED_CONNECTION_INDICATOR_ENABLE` | `0` (off) | Always show connection type on `LED_CONNECTION_INDEX`     |
 | `LOGO_LED_ENABLE`                 | `0` (off) | Enable Logo LED feature with independent effects          |
+| `HAS_MODE_SWITCH`                 | `1` (on)  | Read a 3-position USB/2.4G/BT switch on boot (see below)  |
 
 ### Required LED Index Definitions
 
@@ -210,13 +211,21 @@ The library supports a physical 3-position mode switch:
 | 2.4G            | `MODE_2P4G_IO` LOW | `MODE_SWITCH_2P4G` |
 | BT              | `MODE_BLE_IO` LOW  | `MODE_SWITCH_BT`   |
 
+Boards without this switch (e.g. only a battery power switch, like the Chosfox
+Geonix Rev 2 / 2.5) **must** set `#define HAS_MODE_SWITCH 0`. Otherwise the
+unconnected pins read as "USB" and every boot comes up in USB mode instead of
+the saved wireless mode.
+
 ### USB Auto-Switch Feature
 
 When `USB_AUTO_SWITCH_ENABLE = 1` (default):
 
 - Keyboard automatically switches to USB mode when cable is connected
 - Works regardless of physical switch position
-- Previous wireless mode is restored when cable is unplugged
+- Previous wireless mode is restored when cable is unplugged (after 500ms without VBUS)
+- A USB mode forced by the cable is not saved to flash; the previous wireless mode is
+  saved instead, so powering up on battery resumes wireless. Selecting USB with the
+  `MD_USB` key while unplugged, or any wireless mode while plugged in, is saved as usual.
 
 To disable, add to `config.h`:
 
@@ -363,20 +372,47 @@ Logo LED settings are available in VIA under the "Lighting" tab using channel 2 
    // LED matrix configuration
    led_config_t g_led_config = { ... };
 
-   // QMK callbacks - delegate to library
-   bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
+   // QMK callbacks - delegate to library, but preserve keymap/user hooks
+   bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
+       if (!rgb_matrix_indicators_advanced_user(led_min, led_max)) {
+           return false;
+       }
        return kb_rgb_matrix_indicators_common(led_min, led_max);
    }
 
-   bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+   bool led_update_kb(led_t led_state) {
+       if (!led_update_user(led_state)) {
+           return false;
+       }
+       return kb_led_update(led_state);
+   }
+
+   bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+       if (!process_record_user(keycode, record)) {
+           return false;
+       }
        return kb_process_record_common(keycode, record);
    }
 
+   void notify_usb_device_state_change_kb(struct usb_device_state state) {
+       kb_notify_usb_device_state_change(state);
+       notify_usb_device_state_change_user(state);
+   }
+
+   void housekeeping_task_kb(void) {
+       kb_housekeeping_task();
+       housekeeping_task_user();
+   }
+
+   void keyboard_post_init_kb(void) {
+       kb_keyboard_post_init();
+       keyboard_post_init_user();
+   }
+
+   // board_init has no _user counterpart
    void board_init(void) {
        kb_board_init();
    }
-
-   // ... other callback wrappers
    ```
 
 ### Library Files Overview

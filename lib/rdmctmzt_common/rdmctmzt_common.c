@@ -25,20 +25,20 @@ Keyboard_Info_t Keyboard_Info = {
     .Mac_Win_Mode = INIT_WIN_MAC_MODE,
     .Win_Lock     = INIT_WIN_LOCK_NLOCK,
 #if LOGO_LED_ENABLE
-    .Logo_On_Off     = 1,   // Logo LED on by default
-    .Logo_Mode       = 1,   // Default mode: wave animation (LOGO_MODE_WAVE)
-    .Logo_Hue        = 0,   // Default hue: red
-    .Logo_Saturation = 255, // Full saturation
-    .Logo_Brightness = 180, // Default brightness
-    .Logo_Speed      = 2,   // Medium speed
+    .Logo_On_Off     = 1,                    // Logo LED on by default
+    .Logo_Mode       = LOGO_MODE_FIXED_WAVE, // Default mode: fixed wave
+    .Logo_Hue        = 191,                  // Default color: #8610FF
+    .Logo_Saturation = 239,                  // Default color: #8610FF
+    .Logo_Brightness = 180,                  // Default brightness
+    .Logo_Speed      = 2,                    // Medium speed
 #endif
 #if SIDE_LED_ENABLE
-    .Side_On_Off     = 1,   // Side LED on by default
-    .Side_Mode       = 1,   // Default mode: wave animation (SIDE_MODE_WAVE)
-    .Side_Hue        = 0,   // Default hue: red
-    .Side_Saturation = 255, // Full saturation
-    .Side_Brightness = 180, // Default brightness
-    .Side_Speed      = 2,   // Medium speed
+    .Side_On_Off     = 1,                // Side LED on by default
+    .Side_Mode       = SIDE_MODE_LIGHT,  // Default mode: light (solid)
+    .Side_Hue        = 191,              // Default color: #8610FF
+    .Side_Saturation = 239,              // Default color: #8610FF
+    .Side_Brightness = 180,              // Default brightness
+    .Side_Speed      = 2,                // Medium speed
 #endif
 };
 
@@ -82,6 +82,13 @@ uint16_t Mode_Indicator_Timer = 0;
 // USB auto-switch state tracking
 #if USB_AUTO_SWITCH_ENABLE
 static bool Usb_Power_Previous_State = false;
+// Wireless mode that was active when plugging in the cable forced USB mode.
+// While set, it is what gets saved to flash (so a power-up on battery resumes
+// wireless instead of USB) and it is restored when the cable is removed.
+// QMK_USB_MODE means no cable-forced switch is pending.
+static uint8_t  Usb_Auto_Switch_Resume_Mode = QMK_USB_MODE;
+static uint16_t Usb_Unplug_Timer            = 0;
+#    define USB_UNPLUG_DEBOUNCE_TIME 500 // ms without VBUS before leaving USB mode
 #endif
 
 // WAKEUP_IRQHandler
@@ -338,8 +345,15 @@ OSAL_IRQ_HANDLER(Vector78) {
                 if (Spi_Send_Recv_Flg || (gpio_read_pin(ES_SPI_ACK_IO)) || (!Led_Flash_Busy)) {
                     Save_Flash_3S_Count = (USER_TIME_3S_TIME - 10);
                 } else {
+                    Keyboard_Info_t Save_Info = Keyboard_Info;
+#if USB_AUTO_SWITCH_ENABLE
+                    // Don't persist a USB mode that only the cable forced
+                    if (Keyboard_Info.Key_Mode == QMK_USB_MODE && Usb_Auto_Switch_Resume_Mode != QMK_USB_MODE) {
+                        Save_Info.Key_Mode = Usb_Auto_Switch_Resume_Mode;
+                    }
+#endif
                     Reset_Save_Flash = true;
-                    eeprom_write_block_user((void *)&Keyboard_Info.Key_Mode, 0, sizeof(Keyboard_Info_t));
+                    eeprom_write_block_user((void *)&Save_Info, 0, sizeof(Keyboard_Info_t));
                     Reset_Save_Flash    = false;
                     Save_Flash          = false;
                     Save_Flash_3S_Count = 0;
@@ -371,7 +385,8 @@ OSAL_IRQ_HANDLER(Vector78) {
             // Auto-switch to USB mode when USB cable is plugged in
             if (!Usb_Power_Previous_State && Keyboard_Info.Key_Mode != QMK_USB_MODE) {
                 // USB was just plugged in and we're not in USB mode - switch to USB
-                Keyboard_Info.Key_Mode = QMK_USB_MODE;
+                Usb_Auto_Switch_Resume_Mode = Keyboard_Info.Key_Mode;
+                Keyboard_Info.Key_Mode      = QMK_USB_MODE;
                 Spi_Send_Commad(USER_SWITCH_USB_MODE);
                 es_restart_usb_driver();
                 Led_Rf_Pair_Flg = false;
@@ -459,6 +474,35 @@ OSAL_IRQ_HANDLER(Vector78) {
     OSAL_IRQ_EPILOGUE();
 }
 
+// Called from the main loop: leaves a cable-forced USB mode once the cable is gone.
+void Usb_Auto_Switch_Task(void) {
+#if USB_AUTO_SWITCH_ENABLE
+    // A wireless mode picked explicitly while plugged in wins over the resume mode.
+    // Guarded because the SysTick auto-switch sets both fields.
+    __disable_irq();
+    if (Keyboard_Info.Key_Mode != QMK_USB_MODE) {
+        Usb_Auto_Switch_Resume_Mode = QMK_USB_MODE;
+    }
+    __enable_irq();
+
+    if (Usb_Auto_Switch_Resume_Mode == QMK_USB_MODE || gpio_read_pin(ES_USB_POWER_IO)) {
+        Usb_Unplug_Timer = timer_read();
+        return;
+    }
+    if (timer_elapsed(Usb_Unplug_Timer) < USB_UNPLUG_DEBOUNCE_TIME) {
+        return;
+    }
+
+    Usb_Disconnect();
+    Keyboard_Info.Key_Mode      = Usb_Auto_Switch_Resume_Mode;
+    Usb_Auto_Switch_Resume_Mode = QMK_USB_MODE;
+    Mode_Synchronization(); // Tell the RF module which wireless mode/channel to use
+    Led_Rf_Pair_Flg      = true;
+    Show_Mode_Indicator  = true;
+    Mode_Indicator_Timer = timer_read();
+#endif
+}
+
 void Init_Keyboard_Infomation(void) {
     eeprom_read_block_user((void *)&Keyboard_Info.Key_Mode, 0, sizeof(Keyboard_Info_t));
 
@@ -471,11 +515,19 @@ void Init_Keyboard_Infomation(void) {
         Keyboard_Info.Win_Lock     = INIT_WIN_NLOCK;
 #if LOGO_LED_ENABLE
         Keyboard_Info.Logo_On_Off     = 1;
-        Keyboard_Info.Logo_Mode       = 1; // Wave animation (LOGO_MODE_WAVE)
-        Keyboard_Info.Logo_Hue        = 0;
-        Keyboard_Info.Logo_Saturation = 255;
+        Keyboard_Info.Logo_Mode       = LOGO_MODE_FIXED_WAVE; // Fixed wave, default color #8610FF
+        Keyboard_Info.Logo_Hue        = 191;
+        Keyboard_Info.Logo_Saturation = 239;
         Keyboard_Info.Logo_Brightness = 180;
         Keyboard_Info.Logo_Speed      = 2;
+#endif
+#if SIDE_LED_ENABLE
+        Keyboard_Info.Side_On_Off     = 1;
+        Keyboard_Info.Side_Mode       = SIDE_MODE_LIGHT; // Light (solid), default color #8610FF
+        Keyboard_Info.Side_Hue        = 191;
+        Keyboard_Info.Side_Saturation = 239;
+        Keyboard_Info.Side_Brightness = 180;
+        Keyboard_Info.Side_Speed      = 2;
 #endif
     } else if ((Keyboard_Info.Key_Mode == 0) && (Keyboard_Info.Ble_Channel == 0) && (Keyboard_Info.Batt_Number == 0) && (Keyboard_Info.Nkro == 0) && (Keyboard_Info.Mac_Win_Mode == 0) && (Keyboard_Info.Win_Lock == 0)) {
         Keyboard_Info.Key_Mode     = INIT_WORK_MODE;
@@ -486,11 +538,19 @@ void Init_Keyboard_Infomation(void) {
         Keyboard_Info.Win_Lock     = INIT_WIN_NLOCK;
 #if LOGO_LED_ENABLE
         Keyboard_Info.Logo_On_Off     = 1;
-        Keyboard_Info.Logo_Mode       = 1; // Wave animation (LOGO_MODE_WAVE)
-        Keyboard_Info.Logo_Hue        = 0;
-        Keyboard_Info.Logo_Saturation = 255;
+        Keyboard_Info.Logo_Mode       = LOGO_MODE_FIXED_WAVE; // Fixed wave, default color #8610FF
+        Keyboard_Info.Logo_Hue        = 191;
+        Keyboard_Info.Logo_Saturation = 239;
         Keyboard_Info.Logo_Brightness = 180;
         Keyboard_Info.Logo_Speed      = 2;
+#endif
+#if SIDE_LED_ENABLE
+        Keyboard_Info.Side_On_Off     = 1;
+        Keyboard_Info.Side_Mode       = SIDE_MODE_LIGHT; // Light (solid), default color #8610FF
+        Keyboard_Info.Side_Hue        = 191;
+        Keyboard_Info.Side_Saturation = 239;
+        Keyboard_Info.Side_Brightness = 180;
+        Keyboard_Info.Side_Speed      = 2;
 #endif
     } else {
         if (Keyboard_Info.Key_Mode > QMK_USB_MODE) {

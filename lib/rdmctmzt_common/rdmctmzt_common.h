@@ -108,6 +108,7 @@ enum Custom_Keycodes {
     SIDE_SPI,  // Increase Side LED effect speed
     SIDE_SPD,  // Decrease Side LED effect speed
 #endif
+    QMK_RGB_TOGGLE, // Toggle the main, logo and side LEDs together
 };
 
 enum Custom_KeyModes { QMK_BLE_MODE = 0, QMK_2P4G_MODE, QMK_USB_MODE };
@@ -244,6 +245,7 @@ typedef enum {
 #define TEST_CL QMK_TEST_COLOUR
 #define DBG_SW QMK_DEBUG_SWITCH
 #define MW_CH QMK_MAC_WIN_CH
+#define RGB_RTOG QMK_RGB_TOGGLE
 
 // Logo LED shortnames (only available when LOGO_LED_ENABLE is set)
 #if LOGO_LED_ENABLE
@@ -300,6 +302,7 @@ extern uint16_t Time_3s_Count;
 extern uint16_t Func_Time_3s_Count;
 
 extern void Init_Keyboard_Infomation(void);
+extern void Usb_Auto_Switch_Task(void);
 extern void es_change_qmk_nkro_mode_enable(void);
 void        es_change_qmk_nkro_mode_disable(void);
 

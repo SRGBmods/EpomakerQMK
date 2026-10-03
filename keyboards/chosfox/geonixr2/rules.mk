@@ -1,9 +1,3 @@
-# Patch ChibiOS-Contrib header guard bug (copy-paste from ES32F0283 -> FS026).
-# The ifndef guard uses __SYSTEM_FS026_H__ but the define uses __SYSTEM_ES32F0283_H__,
-# so the guard never activates. This sed is idempotent — safe to run on every build.
-$(shell sed -i 's/__SYSTEM_ES32F0283_H__/__SYSTEM_FS026_H__/' \
-    lib/chibios-contrib/os/common/ext/CMSIS/ES32/FS026/system_fs026.h 2>/dev/null)
-
 # MCU configuration
 MCU_FAMILY = ES32
 MCU_SERIES = FS026
@@ -46,9 +40,6 @@ SRC += rdmctmzt_common.c \
 	user_led_custom.c \
 	user_spi.c \
 	user_system.c
-
-# Include dynamic keymap support
-SRC += quantum/dynamic_keymap.c
 
 # Include FS026 SPI driver
 VPATH += lib/chibios-contrib/os/common/ext/CMSIS/ES32/FS026/md
